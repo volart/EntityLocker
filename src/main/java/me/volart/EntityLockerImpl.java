@@ -29,6 +29,9 @@ public class EntityLockerImpl<T extends Comparable<T>> implements EntityLocker<T
   
   @Override
   public void tryLock(T id, long timeout, TimeUnit unit) throws InterruptedException {
+    if(globalLock.isLocked() && !globalLock.isHeldByCurrentThread()) {
+      wait();
+    }
     
     EntityLocks thread = threads.computeIfAbsent(Thread.currentThread().getId(), x -> new EntityLocks());
     // this thread doesn't do a work, we are in process of locking
@@ -76,6 +79,7 @@ public class EntityLockerImpl<T extends Comparable<T>> implements EntityLocker<T
     
     if (globalLock.isHeldByCurrentThread() && thread.getLocksCount() < GLOBAL_THRESHOLD) {
       globalLock.unlock();
+      notifyAll();
     }
     
     thread.setActive(thread.getLocksCount() > 0);
