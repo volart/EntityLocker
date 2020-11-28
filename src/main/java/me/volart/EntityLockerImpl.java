@@ -18,19 +18,31 @@ public class EntityLockerImpl<T extends Comparable<T>> implements EntityLocker<T
   private final Object syncRoot = new Object();
   
   @Override
-  public void lock(T id) throws InterruptedException {
-    tryLock(id, 0, TimeUnit.SECONDS);
+  public void lock(T... id) throws InterruptedException {
+    tryLock( 0, TimeUnit.SECONDS, id);
   }
   
   @Override
-  public void lock(T[] ids) throws InterruptedException {
-    tryLock(ids, 0, TimeUnit.SECONDS);
+  public void tryLock(long timeout, TimeUnit unit, T... id) throws InterruptedException {
+    Arrays.sort(id);
+    for (T i : id) {
+      tryLock(0, TimeUnit.SECONDS, i);
+    }
   }
   
   @Override
-  public void tryLock(T id, long timeout, TimeUnit unit) throws InterruptedException {
-    if(globalLock.isLocked() && !globalLock.isHeldByCurrentThread()) {
-      wait();
+  public void unlock(T... ids) {
+    Arrays.sort(ids);
+    for (int i = ids.length - 1; i >= 0; i--) {
+      unlock(ids[i]);
+    }
+  }
+  
+  protected void tryLock(long timeout, TimeUnit unit, T id) throws InterruptedException {
+    synchronized (syncRoot) {
+      if (globalLock.isLocked() && !globalLock.isHeldByCurrentThread()) {
+        syncRoot.wait();
+      }
     }
     
     EntityLocks thread = threads.computeIfAbsent(Thread.currentThread().getId(), x -> new EntityLocks());
@@ -39,12 +51,7 @@ public class EntityLockerImpl<T extends Comparable<T>> implements EntityLocker<T
     
     try {
       ReentrantLock entityLock = locks.computeIfAbsent(id, k -> new ReentrantLock());
-      boolean locked = true;
-      if (timeout > 0) {
-        locked = entityLock.tryLock(timeout, unit);
-      } else {
-        entityLock.lock();
-      }
+      boolean locked = lock(entityLock, timeout, unit);
       
       if (locked) {
         thread.add(entityLock);
@@ -55,42 +62,13 @@ public class EntityLockerImpl<T extends Comparable<T>> implements EntityLocker<T
     }
   }
   
-  @Override
-  public void tryLock(T[] ids, long timeout, TimeUnit unit) throws InterruptedException {
-    Arrays.sort(ids);
-    for (T id : ids) {
-      tryLock(id, 0, TimeUnit.SECONDS);
+  private boolean lock(ReentrantLock entityLock, long timeout, TimeUnit unit) throws InterruptedException {
+    if (timeout > 0) {
+      return entityLock.tryLock(timeout, unit);
+    } else {
+      entityLock.lock();
     }
-  }
-  
-  @Override
-  public void unlock(T id) {
-    ReentrantLock entityLock = locks.get(id);
-    if (entityLock == null)
-      throw new IllegalArgumentException("There is no locker for the specified id = " + id);
-    
-    long threadId = Thread.currentThread().getId();
-    EntityLocks thread = threads.get(threadId);
-    if (thread == null)
-      throw new IllegalStateException("There are no locks for this thread id =  " + threadId);
-    
-    entityLock.unlock();
-    thread.remove(entityLock);
-    
-    if (globalLock.isHeldByCurrentThread() && thread.getLocksCount() < GLOBAL_THRESHOLD) {
-      globalLock.unlock();
-      notifyAll();
-    }
-    
-    thread.setActive(thread.getLocksCount() > 0);
-  }
-  
-  @Override
-  public void unlock(T[] ids) {
-    Arrays.sort(ids);
-    for (int i = ids.length - 1; i >= 0; i--) {
-      unlock(ids[i]);
-    }
+    return true;
   }
   
   private void lockGlobal(EntityLocks thread) throws InterruptedException {
@@ -111,5 +89,26 @@ public class EntityLockerImpl<T extends Comparable<T>> implements EntityLocker<T
         globalLock.lock();
       }
     }
+  }
+  
+  public void unlock(T id) {
+    ReentrantLock entityLock = locks.get(id);
+    if (entityLock == null)
+      throw new IllegalArgumentException("There is no locker for the specified id = " + id);
+    
+    long threadId = Thread.currentThread().getId();
+    EntityLocks thread = threads.get(threadId);
+    if (thread == null)
+      throw new IllegalStateException("There are no locks for this thread id =  " + threadId);
+    
+    entityLock.unlock();
+    thread.remove(entityLock);
+    
+    if (globalLock.isHeldByCurrentThread() && thread.getLocksCount() < GLOBAL_THRESHOLD) {
+      globalLock.unlock();
+      notifyAll();
+    }
+    
+    thread.setActive(thread.getLocksCount() > 0);
   }
 }
